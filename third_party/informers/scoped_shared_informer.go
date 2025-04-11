@@ -17,6 +17,8 @@ limitations under the License.
 package informers
 
 import (
+	"errors"
+	"sync"
 	"time"
 
 	"github.com/kcp-dev/logicalcluster/v3"
@@ -31,6 +33,17 @@ import (
 type scopedSharedIndexInformer struct {
 	*sharedIndexInformer
 	clusterName logicalcluster.Name
+
+	registrationLock sync.Mutex
+	registrations    map[cache.ResourceEventHandlerRegistration]bool
+}
+
+func newScopedSharedIndexInformer(sharedIndexInformer *sharedIndexInformer, cluster logicalcluster.Name) *scopedSharedIndexInformer {
+	return &scopedSharedIndexInformer{
+		sharedIndexInformer: sharedIndexInformer,
+		clusterName:         cluster,
+		registrations:       make(map[cache.ResourceEventHandlerRegistration]bool),
+	}
 }
 
 // AddEventHandler adds an event handler to the shared informer using the shared informer's resync
@@ -72,7 +85,17 @@ func (s *scopedSharedIndexInformer) AddEventHandlerWithResyncPeriod(handler cach
 			}
 		},
 	}
-	return s.sharedIndexInformer.AddEventHandlerWithResyncPeriod(scopedHandler, resyncPeriod)
+
+	registration, err := s.sharedIndexInformer.AddEventHandlerWithResyncPeriod(scopedHandler, resyncPeriod)
+	if err != nil {
+		return nil, err
+	}
+
+	s.registrationLock.Lock()
+	defer s.registrationLock.Unlock()
+	s.registrations[registration] = true
+
+	return registration, nil
 }
 
 // IsStopped reports whether the informer has already been stopped
@@ -92,7 +115,22 @@ func (s *scopedSharedIndexInformer) RemoveEventHandler(handle cache.ResourceEven
 	// 3. unblock
 	s.blockDeltas.Lock()
 	defer s.blockDeltas.Unlock()
-	return s.processor.removeListener(handle)
+	if err := s.processor.removeListener(handle); err != nil {
+		return err
+	}
+	s.registrationLock.Lock()
+	defer s.registrationLock.Unlock()
+	delete(s.registrations, handle)
+	return nil
+}
+
+func (s *scopedSharedIndexInformer) UnregisterAllHandlers() error {
+	var err error
+	registrations := s.registrations
+	for handle := range registrations {
+		err = errors.Join(err, s.RemoveEventHandler(handle))
+	}
+	return err
 }
 
 func (s *scopedSharedIndexInformer) objectMatches(obj interface{}) bool {
