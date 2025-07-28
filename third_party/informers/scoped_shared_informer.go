@@ -23,6 +23,8 @@ import (
 
 	"github.com/kcp-dev/logicalcluster/v3"
 
+	"github.com/ntnn/go-ntnn"
+
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 
@@ -49,7 +51,9 @@ func newScopedSharedIndexInformer(sharedIndexInformer *sharedIndexInformer, clus
 
 func newScopedSharedIndexInformerWithContext(ctx context.Context, sharedIndexInformer *sharedIndexInformer, cluster logicalcluster.Name) *scopedSharedIndexInformer {
 	informer := newScopedSharedIndexInformer(sharedIndexInformer, cluster)
+	preStack := ntnn.Stack()
 	go func() {
+		ntnn.DumpStackToFile("/Users/I567861/SAPDevelop/code/kcp-work/stack.log", preStack, "")
 		<-ctx.Done()
 		informer.unregisterAllHandlers()
 	}()
@@ -135,18 +139,21 @@ func (s *scopedSharedIndexInformer) RemoveEventHandler(handle cache.ResourceEven
 }
 
 func (s *scopedSharedIndexInformer) unregisterAllHandlers() {
+	ntnn.Logf("unregistering all handlers on informer for %q, acquiring locks", s.clusterName)
 	s.startedLock.Lock()
 	defer s.startedLock.Unlock()
 	s.blockDeltas.Lock()
 	defer s.blockDeltas.Unlock()
 	s.handlerRegistrationsLock.Lock()
 	defer s.handlerRegistrationsLock.Unlock()
+	ntnn.Logf("unregistering all handlers on informer for %q, acquired locks", s.clusterName)
 
 	handlerRegistrations := s.handlerRegistrations
 	for handle := range handlerRegistrations {
 		utilruntime.HandleError(s.processor.removeListener(handle))
 		delete(s.handlerRegistrations, handle)
 	}
+	ntnn.Logf("unregistered all handlers on informer for %q", s.clusterName)
 }
 
 func (s *scopedSharedIndexInformer) objectMatches(obj interface{}) bool {
